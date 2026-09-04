@@ -1,0 +1,8 @@
+# Windows 向けのツールなので作業ツリーは CRLF に統一する
+* text=auto eol=crlf
+
+# 文字コードと改行がそのまま保たれる必要があるものは変換しない
+#   .vbs = cp932 / .ps1 = BOM 付き UTF-8 / .cmd = cp932 で読まれる
+*.vbs -text
+*.ps1 -text
+*.cmd -text
