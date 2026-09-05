@@ -281,8 +281,8 @@ DEFAULT_CONFIG = {
 # 文字コードセットの選択肢 -> rg の --encoding に渡す値のリスト
 # None は「指定なし」(rg 既定の UTF-8 / BOM 判定)
 ENCODINGS = [
+    ("自動選択 (UTF-8 + Shift_JIS)", [None, "sjis"]),   # 既定（一覧の先頭）
     ("自動選択 (UTF-8)", [None]),
-    ("自動選択 (UTF-8 + Shift_JIS)", [None, "sjis"]),
     ("UTF-8", ["utf-8"]),
     ("Shift_JIS", ["sjis"]),
     ("EUC-JP", ["euc-jp"]),
@@ -364,6 +364,9 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
     except Exception:
         pass
 
+    # 入力欄の幅（文字数）。検索場所だけ右の [...] ボタンの分を引いて端をそろえる
+    WIDE = 88
+
     hist = cfg.get("History") or {}
     home_folder = cfg["Folder"]
     result: dict = {}
@@ -414,16 +417,19 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
 
     # --- 条件 ---------------------------------------------------------------
     label(left, "条件(N):", 0)
-    c_word = combo(left, v_word, "Word", 54, 0, columnspan=2)
+    c_word = combo(left, v_word, "Word", WIDE, 0)
     check(left, "単語単位で探す(W)", v_whole, 1, underline=8)
     check(left, "英大文字と小文字を区別する(C)", v_case, 2, underline=14)
-    check(left, "正規表現(E)", v_regex, 3, underline=5)
-    ttk.Label(left, text=engine_label(rg), foreground="#777").grid(
-        row=3, column=2, sticky="e", padx=(10, 0))
+    # 正規表現とエンジン表示は同じ行に置く
+    # （エンジン表示を列 2 に置くと列幅が広がって検索場所だけ短く見えるため）
+    row3 = ttk.Frame(left)
+    row3.grid(row=3, column=1, columnspan=2, sticky="we")
+    ttk.Checkbutton(row3, text="正規表現(E)", variable=v_regex, underline=5).pack(side="left")
+    ttk.Label(row3, text=engine_label(rg), foreground="#777").pack(side="right")
 
     # --- 検索場所 -----------------------------------------------------------
     label(left, "検索場所(L):", 4)
-    c_folder = combo(left, v_folder, "Folder", 44, 4)
+    c_folder = combo(left, v_folder, "Folder", WIDE, 4)
 
     def pick_folder():
         initial = v_folder.get() if os.path.isdir(v_folder.get()) else None
@@ -452,11 +458,11 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
 
     # --- 対象 / 除外 --------------------------------------------------------
     label(left, "対象ファイル(I):", 7)
-    combo(left, v_files, "Files", 54, 7, columnspan=2)
+    combo(left, v_files, "Files", WIDE, 7)
     label(left, "除外ファイル(J):", 8)
-    combo(left, v_exfiles, "ExcludeFiles", 54, 8, columnspan=2)
+    combo(left, v_exfiles, "ExcludeFiles", WIDE, 8)
     label(left, "除外フォルダー(K):", 9)
-    combo(left, v_exdirs, "ExcludeDirs", 54, 9, columnspan=2)
+    combo(left, v_exdirs, "ExcludeDirs", WIDE, 9)
 
     # --- 下段のグループ -----------------------------------------------------
     groups = ttk.Frame(left)
