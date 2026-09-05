@@ -816,8 +816,8 @@ def main(argv: list[str]) -> int:
 
     root = os.getcwd()
     hits = parse_hits(lines, root)
-    if len(enc_list) > 1:   # 複数回検索したときは順序が混ざるので並べ直す
-        hits.sort(key=lambda h: (h.path.lower(), h.line, h.col))
+    # rg の走査順は並列処理のため一定しない。結果一覧として読みやすいよう常に並べ直す
+    hits.sort(key=lambda h: (h.path.lower(), h.line, h.col))
     if not hits:
         rep.msg("該当なし")
         return 1
