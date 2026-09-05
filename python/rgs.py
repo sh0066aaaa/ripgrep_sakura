@@ -39,6 +39,8 @@ CHAR_CLASSES = [
 ]
 
 VIMGREP_RE = re.compile(r"^(.*):(\d+):(\d+):(.*)$")
+# -v (否該当行) のときは桁が出ない: path:line:text
+VIMGREP_NOCOL_RE = re.compile(r"^(.*):(\d+):(.*)$")
 
 USAGE = "usage: rgs [-Dialog] [-Direct] [-Stdout] [-DryRun] [-WordJp] <rg の引数...>"
 
@@ -257,10 +259,49 @@ def ensure_search_path(args: list[str]) -> list[str]:
 
 # --- 設定の永続化 -----------------------------------------------------------
 
+# 既定値はサクラエディタの Grep ダイアログに合わせてある
 DEFAULT_CONFIG = {
-    "Word": "", "Folder": "", "Files": "",
-    "Case": False, "Whole": False, "Regex": False, "Sub": True, "Hidden": False,
+    "Word": "",
+    "Folder": "",
+    "Files": "*.*",
+    "ExcludeFiles": "*.msi;*.exe;*.obj;*.pdb;*.ilk;*.res;*.pch;*.iobj;*.ipdb",
+    "ExcludeDirs": ".git;.svn;.vs",
+    "Case": False,       # 英大文字と小文字を区別する
+    "Whole": False,      # 単語単位で探す
+    "Regex": False,      # 正規表現
+    "Sub": True,         # サブフォルダーも検索
+    "Hidden": False,     # 隠しファイルも検索 (rg 固有)
+    "Output": "line",    # 結果出力     line=該当行 / part=該当部分 / invert=否該当行
+    "Format": "normal",  # 結果出力形式 normal=ノーマル / perfile=ファイル毎 / only=結果のみ
+    "FirstOnly": False,  # ファイル毎最初のみ検索
+    "Encoding": "",      # 文字コードセット（空なら ENCODINGS の先頭）
+    "History": {},       # 各入力欄の履歴
 }
+
+# 文字コードセットの選択肢 -> rg の --encoding に渡す値のリスト
+# None は「指定なし」(rg 既定の UTF-8 / BOM 判定)
+ENCODINGS = [
+    ("自動選択 (UTF-8)", [None]),
+    ("自動選択 (UTF-8 + Shift_JIS)", [None, "sjis"]),
+    ("UTF-8", ["utf-8"]),
+    ("Shift_JIS", ["sjis"]),
+    ("EUC-JP", ["euc-jp"]),
+    ("UTF-16LE", ["utf-16le"]),
+    ("UTF-16BE", ["utf-16be"]),
+]
+ENCODING_LABELS = [e[0] for e in ENCODINGS]
+ENCODING_MAP = dict(ENCODINGS)
+
+HISTORY_MAX = 16
+
+
+def push_history(cfg: dict, key: str, value: str) -> None:
+    """コンボボックスの履歴を先頭に積む。"""
+    if not value:
+        return
+    hist = cfg.setdefault("History", {})
+    items = [v for v in hist.get(key, []) if v != value]
+    hist[key] = ([value] + items)[:HISTORY_MAX]
 
 
 def config_path() -> Path:
@@ -294,7 +335,26 @@ def save_config(cfg: dict) -> None:
 
 # --- 検索ダイアログ ---------------------------------------------------------
 
-def show_dialog(cfg: dict) -> dict | None:
+def engine_label(rg: str) -> str:
+    """サクラエディタの「bregonig.dll ...」表示にあたる、検索エンジンの情報。"""
+    def first_line(args):
+        try:
+            r = subprocess.run([rg] + args, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+            if r.returncode != 0:
+                return ""
+            return r.stdout.decode("utf-8", "replace").splitlines()[0].strip()
+        except Exception:
+            return ""
+    ver = first_line(["--version"]) or "ripgrep"
+    pcre = first_line(["--pcre2-version"])
+    if pcre:
+        ver += " with " + pcre.split(" is ")[0]
+    return ver
+
+
+def show_dialog(cfg: dict, rg: str) -> dict | None:
+    """サクラエディタの Grep ダイアログに似せた検索ダイアログ。"""
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
@@ -304,90 +364,203 @@ def show_dialog(cfg: dict) -> dict | None:
     except Exception:
         pass
 
-    root = tk.Tk()
-    root.title("rgs - ripgrep 検索")
-    root.resizable(False, False)
-
-    word = tk.StringVar(value=cfg["Word"])
-    folder = tk.StringVar(value=cfg["Folder"])
-    files = tk.StringVar(value=cfg["Files"])
-    case_ = tk.BooleanVar(value=bool(cfg["Case"]))
-    whole = tk.BooleanVar(value=bool(cfg["Whole"]))
-    regex = tk.BooleanVar(value=bool(cfg["Regex"]))
-    sub = tk.BooleanVar(value=bool(cfg["Sub"]))
-    hidden = tk.BooleanVar(value=bool(cfg["Hidden"]))
+    hist = cfg.get("History") or {}
+    home_folder = cfg["Folder"]
     result: dict = {}
 
-    frm = ttk.Frame(root, padding=14)
-    frm.grid(sticky="nsew")
+    root = tk.Tk()
+    root.title("rgs - Grep")
+    root.resizable(False, False)
 
-    def add_row(r, label, var, browse=False):
-        ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", pady=5)
-        entry = ttk.Entry(frm, textvariable=var, width=48)
-        entry.grid(row=r, column=1, sticky="we", pady=5, padx=(8, 0))
-        if browse:
-            ttk.Button(frm, text="参照...", width=9, command=pick_folder
-                       ).grid(row=r, column=2, padx=(6, 0))
-        else:
-            ttk.Frame(frm, width=76).grid(row=r, column=2)
-        return entry
+    v_word = tk.StringVar(value=cfg["Word"])
+    v_folder = tk.StringVar(value=cfg["Folder"])
+    v_files = tk.StringVar(value=cfg["Files"])
+    v_exfiles = tk.StringVar(value=cfg["ExcludeFiles"])
+    v_exdirs = tk.StringVar(value=cfg["ExcludeDirs"])
+    v_case = tk.BooleanVar(value=bool(cfg["Case"]))
+    v_whole = tk.BooleanVar(value=bool(cfg["Whole"]))
+    v_regex = tk.BooleanVar(value=bool(cfg["Regex"]))
+    v_sub = tk.BooleanVar(value=bool(cfg["Sub"]))
+    v_hidden = tk.BooleanVar(value=bool(cfg["Hidden"]))
+    v_first = tk.BooleanVar(value=bool(cfg.get("FirstOnly")))
+    v_output = tk.StringVar(value=cfg.get("Output", "line"))
+    v_format = tk.StringVar(value=cfg.get("Format", "normal"))
+    enc_label = cfg.get("Encoding") or ENCODING_LABELS[0]
+    if enc_label not in ENCODING_MAP:
+        enc_label = ENCODING_LABELS[0]
+    v_enc = tk.StringVar(value=enc_label)
+
+    outer = ttk.Frame(root, padding=10)
+    outer.grid(sticky="nsew")
+    left = ttk.Frame(outer)
+    left.grid(row=0, column=0, sticky="nw")
+    right = ttk.Frame(outer)
+    right.grid(row=0, column=1, sticky="ne", padx=(10, 0))
+
+    def combo(parent, var, key, width, row, column=1, columnspan=1):
+        c = ttk.Combobox(parent, textvariable=var, width=width, values=hist.get(key, []))
+        c.grid(row=row, column=column, columnspan=columnspan, sticky="we", pady=2)
+        return c
+
+    def label(parent, text, row, column=0, **kw):
+        w = ttk.Label(parent, text=text, **kw)
+        w.grid(row=row, column=column, sticky="e", padx=(0, 6), pady=2)
+        return w
+
+    def check(parent, text, var, row, column=1, sticky="w", **kw):
+        c = ttk.Checkbutton(parent, text=text, variable=var, **kw)
+        c.grid(row=row, column=column, sticky=sticky, pady=1)
+        return c
+
+    # --- 条件 ---------------------------------------------------------------
+    label(left, "条件(N):", 0)
+    c_word = combo(left, v_word, "Word", 54, 0, columnspan=2)
+    check(left, "単語単位で探す(W)", v_whole, 1, underline=8)
+    check(left, "英大文字と小文字を区別する(C)", v_case, 2, underline=14)
+    check(left, "正規表現(E)", v_regex, 3, underline=5)
+    ttk.Label(left, text=engine_label(rg), foreground="#777").grid(
+        row=3, column=2, sticky="e", padx=(10, 0))
+
+    # --- 検索場所 -----------------------------------------------------------
+    label(left, "検索場所(L):", 4)
+    c_folder = combo(left, v_folder, "Folder", 44, 4)
 
     def pick_folder():
-        initial = folder.get() if os.path.isdir(folder.get()) else None
+        initial = v_folder.get() if os.path.isdir(v_folder.get()) else None
         chosen = filedialog.askdirectory(initialdir=initial, parent=root)
         if chosen:
-            folder.set(os.path.normpath(chosen))
+            v_folder.set(os.path.normpath(chosen))
 
-    entry_word = add_row(0, "検索文字列", word)
-    add_row(1, "フォルダ", folder, browse=True)
-    add_row(2, "ファイル", files)
-    ttk.Label(frm, text="例: *.c;*.h   空欄ならすべてのファイル", foreground="#777"
-              ).grid(row=3, column=1, sticky="w", padx=(8, 0))
+    def go_up():
+        cur = v_folder.get().rstrip("/").rstrip("\\")
+        parent = os.path.dirname(cur)
+        if parent and parent != cur:
+            v_folder.set(parent)
 
-    opts = ttk.LabelFrame(frm, text="オプション", padding=10)
-    opts.grid(row=4, column=0, columnspan=3, sticky="we", pady=(12, 0))
-    ttk.Checkbutton(opts, text="大文字小文字を区別する", variable=case_).grid(row=0, column=0, sticky="w", padx=4, pady=3)
-    ttk.Checkbutton(opts, text="正規表現", variable=regex).grid(row=0, column=1, sticky="w", padx=18, pady=3)
-    ttk.Checkbutton(opts, text="単語単位で探す", variable=whole).grid(row=1, column=0, sticky="w", padx=4, pady=3)
-    ttk.Checkbutton(opts, text="サブフォルダも検索", variable=sub).grid(row=1, column=1, sticky="w", padx=18, pady=3)
-    ttk.Checkbutton(opts, text="隠しファイルも含める", variable=hidden).grid(row=2, column=0, sticky="w", padx=4, pady=3)
+    ttk.Button(left, text="...", width=4, command=pick_folder).grid(
+        row=4, column=2, sticky="w", padx=(6, 0))
 
+    sub_row = ttk.Frame(left)
+    sub_row.grid(row=5, column=1, columnspan=2, sticky="we")
+    ttk.Checkbutton(sub_row, text="サブフォルダーも検索(S)", variable=v_sub, underline=11
+                    ).grid(row=0, column=0, sticky="w")
+    ttk.Button(sub_row, text="上階層へ(U)", width=13, underline=4, command=go_up
+               ).grid(row=0, column=1, padx=(12, 4))
+    ttk.Button(sub_row, text="現フォルダー(G)", width=15, underline=7,
+               command=lambda: v_folder.set(home_folder)).grid(row=0, column=2)
+    check(left, "隠しファイルも検索する (rg 固有)", v_hidden, 6)
+
+    # --- 対象 / 除外 --------------------------------------------------------
+    label(left, "対象ファイル(I):", 7)
+    combo(left, v_files, "Files", 54, 7, columnspan=2)
+    label(left, "除外ファイル(J):", 8)
+    combo(left, v_exfiles, "ExcludeFiles", 54, 8, columnspan=2)
+    label(left, "除外フォルダー(K):", 9)
+    combo(left, v_exdirs, "ExcludeDirs", 54, 9, columnspan=2)
+
+    # --- 下段のグループ -----------------------------------------------------
+    groups = ttk.Frame(left)
+    groups.grid(row=10, column=0, columnspan=3, sticky="we", pady=(10, 0))
+
+    g_out = ttk.LabelFrame(groups, text="結果出力", padding=6)
+    g_out.grid(row=0, column=0, sticky="nw")
+    for i, (text, val) in enumerate([("該当行(1)", "line"), ("該当部分(2)", "part"),
+                                     ("否該当行(3)", "invert")]):
+        ttk.Radiobutton(g_out, text=text, value=val, variable=v_output).grid(
+            row=i, column=0, sticky="w")
+
+    g_fmt = ttk.LabelFrame(groups, text="結果出力形式", padding=6)
+    g_fmt.grid(row=0, column=1, sticky="nw", padx=(8, 0))
+    for i, (text, val) in enumerate([("ノーマル(4)", "normal"), ("ファイル毎(5)", "perfile"),
+                                     ("結果のみ(6)", "only")]):
+        ttk.Radiobutton(g_fmt, text=text, value=val, variable=v_format).grid(
+            row=i, column=0, sticky="w")
+
+    g_etc = ttk.LabelFrame(groups, text="その他", padding=6)
+    g_etc.grid(row=0, column=2, sticky="nw", padx=(8, 0))
+    ttk.Checkbutton(g_etc, text="ファイル毎最初のみ検索(7)", variable=v_first).grid(
+        row=0, column=0, sticky="w")
+    ttk.Label(g_etc, text="文字コードセット(A):").grid(row=1, column=0, sticky="w", pady=(8, 0))
+    ttk.Combobox(g_etc, textvariable=v_enc, values=ENCODING_LABELS, state="readonly",
+                 width=26).grid(row=2, column=0, sticky="w")
+
+    # --- 右側のボタン -------------------------------------------------------
     def do_search(*_):
-        w = word.get().strip()
-        d = folder.get().strip()
-        if not w:
-            messagebox.showinfo("rgs", "検索文字列を入力してください。", parent=root)
-            entry_word.focus_set()
+        word = v_word.get().strip()
+        folder = v_folder.get().strip()
+        if not word:
+            messagebox.showinfo("rgs", "条件を入力してください。", parent=root)
+            c_word.focus_set()
             return
-        if d and not os.path.isdir(d):
-            messagebox.showinfo("rgs", "フォルダが見つかりません:\n" + d, parent=root)
+        if folder and not os.path.isdir(folder):
+            messagebox.showinfo("rgs", "検索場所が見つかりません:\n" + folder, parent=root)
+            c_folder.focus_set()
             return
         result.update({
-            "Word": w, "Folder": d, "Files": files.get().strip(),
-            "Case": case_.get(), "Whole": whole.get(), "Regex": regex.get(),
-            "Sub": sub.get(), "Hidden": hidden.get(),
+            "Word": word, "Folder": folder, "Files": v_files.get().strip(),
+            "ExcludeFiles": v_exfiles.get().strip(), "ExcludeDirs": v_exdirs.get().strip(),
+            "Case": v_case.get(), "Whole": v_whole.get(), "Regex": v_regex.get(),
+            "Sub": v_sub.get(), "Hidden": v_hidden.get(), "FirstOnly": v_first.get(),
+            "Output": v_output.get(), "Format": v_format.get(), "Encoding": v_enc.get(),
+            "History": cfg.get("History") or {},
         })
+        for key in ("Word", "Folder", "Files", "ExcludeFiles", "ExcludeDirs"):
+            push_history(result, key, result[key])
         root.destroy()
 
-    btns = ttk.Frame(frm)
-    btns.grid(row=5, column=0, columnspan=3, sticky="e", pady=(14, 0))
-    ttk.Button(btns, text="検索", width=12, command=do_search).grid(row=0, column=0, padx=4)
-    ttk.Button(btns, text="キャンセル", width=12, command=root.destroy).grid(row=0, column=1)
+    def open_help():
+        readme = Path(__file__).resolve().parent.parent / "README.md"
+        try:
+            os.startfile(str(readme))
+        except Exception:
+            pass
 
+    ttk.Button(right, text="検索(F)", width=14, underline=3, command=do_search
+               ).grid(row=0, column=0, pady=2)
+    ttk.Button(right, text="キャンセル(X)", width=14, underline=6, command=root.destroy
+               ).grid(row=1, column=0, pady=2)
+    ttk.Button(right, text="ヘルプ(H)", width=14, underline=4, command=open_help
+               ).grid(row=2, column=0, pady=(12, 2))
+
+    # --- キー割り当て -------------------------------------------------------
     root.bind("<Return>", do_search)
     root.bind("<Escape>", lambda e: root.destroy())
+    root.bind("<Alt-f>", do_search)
+    root.bind("<Alt-x>", lambda e: root.destroy())
+    root.bind("<Alt-h>", lambda e: open_help())
+    root.bind("<Alt-u>", lambda e: go_up())
+    root.bind("<Alt-g>", lambda e: v_folder.set(home_folder))
+    root.bind("<Alt-n>", lambda e: c_word.focus_set())
+    root.bind("<Alt-l>", lambda e: c_folder.focus_set())
+    for key, var in (("w", v_whole), ("c", v_case), ("e", v_regex), ("s", v_sub)):
+        root.bind("<Alt-%s>" % key, lambda e, v=var: v.set(not v.get()))
+
     root.eval("tk::PlaceWindow . center")
     root.attributes("-topmost", True)
-    entry_word.focus_force()
-    entry_word.select_range(0, "end")
+    c_word.focus_force()
+    c_word.select_range(0, "end")
     root.mainloop()
     return result or None
+
+
+def globs_from(text: str, negate: bool = False, as_dir: bool = False) -> list[str]:
+    """"*.c;*.h" のような並びを rg の -g 引数に変換する。"""
+    out: list[str] = []
+    for g in re.split(r"[;,]", text or ""):
+        g = g.strip()
+        if not g:
+            continue
+        if as_dir:
+            g = g.rstrip("/").rstrip("\\") + "/**"
+        out += ["-g", ("!" + g) if negate else g]
+    return out
 
 
 def config_to_rg_args(cfg: dict, rg: str) -> list[str]:
     args = ["-s"] if cfg["Case"] else ["-i"]
     pattern = cfg["Word"]
 
+    # 単語単位: サクラエディタ互換の文字種境界（正規表現と併用時は rg 標準の -w）
     if cfg["Whole"] and not cfg["Regex"] and has_pcre2(rg):
         args.append("-P")
         pattern = jp_word_pattern(pattern)
@@ -398,14 +571,26 @@ def config_to_rg_args(cfg: dict, rg: str) -> list[str]:
     elif not cfg["Regex"]:
         args.append("-F")
 
-    if not cfg["Sub"]:
+    if not cfg.get("Sub", True):
         args.append("--max-depth=1")
-    if cfg["Hidden"]:
+    if cfg.get("Hidden"):
         args.append("--hidden")
-    for g in re.split(r"[;,]", cfg["Files"]):
-        g = g.strip()
-        if g:
-            args += ["-g", g]
+    if cfg.get("FirstOnly"):
+        args += ["-m", "1"]
+
+    # 結果出力
+    output = cfg.get("Output", "line")
+    if output == "part":
+        args.append("-o")       # 該当部分
+    elif output == "invert":
+        args.append("-v")       # 否該当行
+
+    # 対象ファイル。空欄と *.* は「すべて」の意味なので -g を付けない
+    files = (cfg.get("Files") or "").strip()
+    if files and files != "*.*":
+        args += globs_from(files)
+    args += globs_from(cfg.get("ExcludeFiles"), negate=True)
+    args += globs_from(cfg.get("ExcludeDirs"), negate=True, as_dir=True)
 
     args += ["--", pattern, cfg["Folder"]]
     return args
@@ -423,6 +608,67 @@ def run_rg(rg: str, args: list[str]) -> tuple[int, list[str]]:
     text = proc.stdout.decode("utf-8", errors="replace")
     lines = [ln.rstrip("\r") for ln in text.split("\n") if ln.strip()]
     return proc.returncode, lines
+
+
+def is_utf8_like(path: str) -> bool:
+    """rg が既定（UTF-8 / BOM 判定）で正しく読めるファイルかどうか。"""
+    import codecs
+    try:
+        with open(path, "rb") as f:
+            data = f.read(1024 * 1024)
+    except OSError:
+        return True
+    if data[:3] == codecs.BOM_UTF8 or data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        return True                      # BOM 付きは rg が自分で判定する
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(data, False)
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def line_path(line: str) -> str | None:
+    m = VIMGREP_RE.match(line) or VIMGREP_NOCOL_RE.match(line)
+    return m.group(1) if m else None
+
+
+def run_rg_encodings(rg: str, args: list[str], encodings: list) -> tuple[int, list[str]]:
+    """複数の文字コードで検索して結果をマージする（「自動選択」用）。
+
+    rg はサクラエディタのような 1 ファイルごとの文字コード判定ができないので
+    UTF-8 と Shift_JIS で 2 回検索する。ただし単純に足すと ASCII の検索語では
+    同じ箇所が両方の回で当たって重複するため、ファイルごとにどちらの回の結果を
+    採用するかを、そのファイルが UTF-8 として読めるかどうかで決める。
+    """
+    if len(encodings) == 1:
+        enc = encodings[0]
+        extra = [] if enc is None else ["--encoding", enc]
+        return run_rg(rg, extra + args)
+
+    merged: list[str] = []
+    rc_final = 1
+    cache: dict[str, bool] = {}
+    cwd = os.getcwd()
+    for enc in encodings:
+        extra = [] if enc is None else ["--encoding", enc]
+        rc, lines = run_rg(rg, extra + args)
+        if rc > 1:
+            return rc, lines
+        if rc == 0:
+            rc_final = 0
+        want_utf8 = enc is None or enc == "utf-8"
+        for ln in lines:
+            path = line_path(ln)
+            if path is None:
+                continue
+            full = path if os.path.isabs(path) else os.path.join(cwd, path)
+            ok = cache.get(full)
+            if ok is None:
+                ok = is_utf8_like(full)
+                cache[full] = ok
+            if ok == want_utf8:
+                merged.append(ln)
+    return rc_final, merged
 
 
 def byte_col_to_char_col(text: str, byte_col: int) -> int:
@@ -451,9 +697,13 @@ def parse_hits(lines: list[str], root: str) -> list[Hit]:
     hits = []
     for line in lines:
         m = VIMGREP_RE.match(line)
-        if not m:
-            continue
-        path, lno, bcol, text = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+        if m:
+            path, lno, bcol, text = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+        else:
+            m = VIMGREP_NOCOL_RE.match(line)
+            if not m:
+                continue
+            path, lno, bcol, text = m.group(1), int(m.group(2)), 1, m.group(3)
         if not os.path.isabs(path):
             path = os.path.normpath(os.path.join(root, path))
         path = path.replace("/", "\\")
@@ -461,11 +711,31 @@ def parse_hits(lines: list[str], root: str) -> list[Hit]:
     return hits
 
 
-def build_output(shown_args: list[str], root: str, rgrc: str | None, hits: list[Hit]):
+def format_body(hits: list[Hit], fmt: str) -> list[str]:
+    """結果出力形式に応じて本文を組み立てる。
+
+    ノーマル以外は行にファイル名が無いのでタグジャンプは効かない。
+    """
+    if fmt == "only":                       # 結果のみ
+        return [h.text for h in hits]
+    if fmt == "perfile":                    # ファイル毎
+        out: list[str] = []
+        last = None
+        for h in hits:
+            if h.path != last:
+                out.append(h.path)
+                last = h.path
+            out.append("\t(%d,%d): %s" % (h.line, h.col, h.text))
+        return out
+    return [h.format() for h in hits]       # ノーマル
+
+
+def build_output(shown_args: list[str], root: str, rgrc: str | None,
+                 hits: list[Hit], fmt: str = "normal"):
     header = ["□検索条件  " + " ".join(shown_args), "□フォルダ  " + root]
     if rgrc:
         header.append("□既定設定  " + rgrc)
-    body = [h.format() for h in hits]
+    body = format_body(hits, fmt)
     footer = ["", "該当 %d 件" % len(hits)]
     return header, body, footer
 
@@ -503,6 +773,8 @@ def main(argv: list[str]) -> int:
         return 1
 
     rg_args = opt.rg_args
+    enc_list: list = [None]
+    fmt = "normal"
     if opt.dialog:
         cfg = load_config()
         if opt.init_word:
@@ -511,13 +783,15 @@ def main(argv: list[str]) -> int:
             cfg["Folder"] = opt.init_folder
         if not cfg["Folder"]:
             cfg["Folder"] = os.getcwd()
-        chosen = show_dialog(cfg)
+        chosen = show_dialog(cfg, rg)
         if not chosen:
             return 0
         save_config(chosen)
         if chosen["Folder"] and os.path.isdir(chosen["Folder"]):
             os.chdir(chosen["Folder"])
         rg_args = config_to_rg_args(chosen, rg)
+        enc_list = ENCODING_MAP.get(chosen.get("Encoding", ""), [None])
+        fmt = chosen.get("Format", "normal")
 
     rgrc = apply_default_rgrc()
 
@@ -532,7 +806,7 @@ def main(argv: list[str]) -> int:
         rep.msg("cwd: " + os.getcwd())
         return 0
 
-    rc, lines = run_rg(rg, rg_args)
+    rc, lines = run_rg_encodings(rg, rg_args, enc_list)
     if rc == 1:
         rep.msg("該当なし")
         return 1
@@ -542,6 +816,8 @@ def main(argv: list[str]) -> int:
 
     root = os.getcwd()
     hits = parse_hits(lines, root)
+    if len(enc_list) > 1:   # 複数回検索したときは順序が混ざるので並べ直す
+        hits.sort(key=lambda h: (h.path.lower(), h.line, h.col))
     if not hits:
         rep.msg("該当なし")
         return 1
@@ -551,7 +827,7 @@ def main(argv: list[str]) -> int:
         subprocess.Popen([sakura, "-Y=%d" % h.line, "-X=%d" % h.col, "--", h.path])
         return 0
 
-    header, body, footer = build_output(shown_args, root, rgrc, hits)
+    header, body, footer = build_output(shown_args, root, rgrc, hits, fmt)
 
     if opt.stdout:
         write_utf8_stdout(header + body + footer)

@@ -59,6 +59,51 @@ eq("parse flags", (o.dialog, o.dry_run, o.init_word, o.init_folder, o.rg_args),
 o2 = rgs.parse_args(["-i", "-Dialog"])
 eq("parse stops at rg arg", o2.rg_args, ["-i", "-Dialog"])
 
+# --- 対象/除外ファイルの glob 変換 ---
+eq("glob files",   rgs.globs_from("*.c;*.h"), ["-g", "*.c", "-g", "*.h"])
+eq("glob exclude", rgs.globs_from("*.exe,*.obj", negate=True), ["-g", "!*.exe", "-g", "!*.obj"])
+eq("glob dirs",    rgs.globs_from(".git;.svn", negate=True, as_dir=True),
+   ["-g", "!.git/**", "-g", "!.svn/**"])
+eq("glob empty",   rgs.globs_from(""), [])
+
+# --- 結果出力 / ファイル毎最初のみ / 除外 ---
+eq("dlg 該当部分", rgs.config_to_rg_args(cfg(Output="part"), rg)[:3], ["-i", "-F", "-o"])
+eq("dlg 否該当行", rgs.config_to_rg_args(cfg(Output="invert"), rg)[:3], ["-i", "-F", "-v"])
+eq("dlg 最初のみ", rgs.config_to_rg_args(cfg(FirstOnly=True), rg)[:4], ["-i", "-F", "-m", "1"])
+eq("dlg *.* は全ファイル", rgs.config_to_rg_args(cfg(Files="*.*"), rg),
+   ["-i", "-F", "--", "test", r"C:\t"])
+eq("dlg 除外", rgs.config_to_rg_args(cfg(Files="", ExcludeFiles="*.exe", ExcludeDirs=".git"), rg),
+   ["-i", "-F", "-g", "!*.exe", "-g", "!.git/**", "--", "test", r"C:\t"])
+
+# --- 結果出力形式 ---
+hits = [rgs.Hit("X:/a.c", 1, 2, "aaa"), rgs.Hit("X:/a.c", 3, 4, "bbb"),
+        rgs.Hit("X:/b.c", 5, 6, "ccc")]
+eq("fmt ノーマル", rgs.format_body(hits, "normal"),
+   ["X:/a.c(1,2): aaa", "X:/a.c(3,4): bbb", "X:/b.c(5,6): ccc"])
+eq("fmt ファイル毎", rgs.format_body(hits, "perfile"),
+   ["X:/a.c", "\t(1,2): aaa", "\t(3,4): bbb", "X:/b.c", "\t(5,6): ccc"])
+eq("fmt 結果のみ", rgs.format_body(hits, "only"), ["aaa", "bbb", "ccc"])
+
+# --- 文字コードセット ---
+eq("enc 自動選択", rgs.ENCODING_MAP["自動選択 (UTF-8)"], [None])
+eq("enc 自動+SJIS", rgs.ENCODING_MAP["自動選択 (UTF-8 + Shift_JIS)"], [None, "sjis"])
+eq("enc Shift_JIS", rgs.ENCODING_MAP["Shift_JIS"], ["sjis"])
+
+# --- -v のときの桁なし形式 ---
+parsed = rgs.parse_hits([r"C:\x\a.c:12:no column here"], r"C:\x")
+eq("parse 桁なし", [(h.path, h.line, h.col, h.text) for h in parsed],
+   [(r"C:\x\a.c", 12, 1, "no column here")])
+
+# --- UTF-8 判定 ---
+import tempfile
+d = tempfile.mkdtemp()
+u8 = os.path.join(d, "u8.txt")
+sj = os.path.join(d, "sj.txt")
+open(u8, "wb").write("日本語".encode("utf-8"))
+open(sj, "wb").write("日本語".encode("cp932"))
+eq("utf8 判定 (UTF-8)", rgs.is_utf8_like(u8), True)
+eq("utf8 判定 (SJIS)", rgs.is_utf8_like(sj), False)
+
 print()
 print("ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)
