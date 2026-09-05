@@ -22,7 +22,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 そのうえで `$PROFILE` に登録しておくと短く書ける:
 
 ```
-function rgs { & C:\work\ripgrep_sakura\powershell\rgs.ps1 @args }
+function rgs { & <clone したフォルダ>\powershell\rgs.ps1 @args }
 ```
 
 ## 注意

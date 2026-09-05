@@ -125,8 +125,10 @@ def apply_default_rgrc() -> str | None:
 _pcre2_cache: bool | None = None
 
 
-def has_pcre2(rg: str) -> bool:
+def has_pcre2(rg: str | None) -> bool:
     global _pcre2_cache
+    if not rg:
+        return False
     if _pcre2_cache is None:
         try:
             r = subprocess.run([rg, "--pcre2-version"], stdout=subprocess.DEVNULL,

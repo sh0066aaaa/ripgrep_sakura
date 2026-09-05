@@ -1,11 +1,53 @@
 # rgs — ripgrep の結果をサクラエディタで開く
 
-ripgrep で検索し、その結果を **サクラエディタの Grep 結果形式**
-（`ファイル名(行,桁): 内容`）に変換してサクラエディタで開く。
-結果行で **F12（タグジャンプ）** を押すとその箇所へ飛べる。`Shift+F12` で戻る。
+[ripgrep](https://github.com/BurntSushi/ripgrep) で検索し、その結果を
+**サクラエディタの Grep 結果形式**（`ファイル名(行,桁): 内容`）に変換してサクラエディタで開く。
+結果行で `F12`（タグジャンプ）を押すと、その行のファイル・行・桁へ飛べる。
 
-Python 版と PowerShell 版があり、**どちらも同じ仕様**（[docs/spec.md](docs/spec.md)）で
-同じ出力を返す。通常は Python 版を使えばよい。
+サクラエディタ内蔵の Grep を ripgrep に置き換えて、大きなツリーでも待たずに検索するのが目的。
+
+![検索ダイアログ](docs/images/dialog.png)
+
+## できること
+
+- ripgrep の速度で検索して、結果をサクラエディタの Grep 結果として開く
+- 結果行から `F12` でタグジャンプ、`Shift+F12` で戻る。Ctrl+ダブルクリックで飛ぶ設定にもできる
+- サクラエディタの Grep ダイアログに合わせた検索ダイアログ
+  （対象／除外ファイル、除外フォルダー、正規表現、結果出力形式、文字コードセット）
+- **サクラエディタと同じ単語単位検索** — `test` が `test用` にマッチする
+  （ripgrep の `-w` は Unicode の単語境界なのでマッチしない）
+- **日本語の桁ずれなし** — ripgrep のバイト単位の桁をサクラエディタの文字単位の桁へ変換
+- **Shift_JIS と UTF-8 が混在したツリー**も検索できる（2 回検索して重複を除く）
+- サクラエディタのマクロから起動（カーソル位置の単語と編集中フォルダーを初期値にする）
+
+Python 版と PowerShell 版があり、**どちらも同じ仕様**（[docs/spec.md](docs/spec.md)）で同じ出力を返す。
+通常は Python 版を使えばよい。
+
+## 動作環境
+
+| | |
+|---|---|
+| OS | Windows |
+| サクラエディタ | 2.4 系で確認（2.4.3.7173） |
+| ripgrep | 14 以降。単語単位検索には PCRE2 入りのビルドが必要 |
+| Python | 3.8 以降（Python 版を使う場合。標準の `tkinter` を使う） |
+
+PowerShell 版は Windows 標準の PowerShell 5.1 で動くので、Python が無くても使える。
+
+## インストール
+
+```
+git clone https://github.com/<ユーザー名>/ripgrep_sakura.git
+```
+
+ripgrep が入っていなければ:
+
+```
+winget install BurntSushi.ripgrep.MSVC
+```
+
+`python`（または `powershell`）フォルダを PATH に追加すると、どこからでも `rgs` で呼べる。
+サクラエディタから使う場合の設定は「[サクラエディタから起動する（マクロ）](#サクラエディタから起動するマクロ)」を参照。
 
 ## 構成
 
@@ -26,17 +68,6 @@ ripgrep_sakura/
    ├─ rgs.vbs            サクラエディタ用マクロ（検索ダイアログを開く）
    └─ rgs_quick.vbs      サクラエディタ用マクロ（即検索してアウトプットウィンドウへ）
 ```
-
-## 準備
-
-1. ripgrep をインストール（PATH に `rg` が無い場合）
-
-```
-winget install BurntSushi.ripgrep.MSVC
-```
-
-2. `python`（または `powershell`）フォルダを PATH に追加すると、
-   どこからでも `rgs` で呼べる
 
 ## 使い方
 
@@ -119,7 +150,7 @@ PowerShell 版のダイアログは項目を絞った簡易版のまま。
 ### 登録手順
 
 1. **設定 → 共通設定 → マクロ**
-   - 「マクロ一覧」のフォルダに `C:\work\ripgrep_sakura\macros` を指定
+   - 「マクロ一覧」のフォルダに `<clone したフォルダ>\macros` を指定
    - 空き番号に 名前 `rgs` / File `rgs.vbs`（必要なら `rgs_quick.vbs` も別番号に）
 2. **設定 → キー割り当て**
    - 種別「外部マクロ」→ `rgs` を選び、好きなキー（例 `Ctrl+Shift+G`）に割り当て
@@ -264,3 +295,22 @@ test  ->  (?<![0-9A-Za-z_])test(?![0-9A-Za-z_])
 
 - [docs/spec.md](docs/spec.md) — 実装非依存の仕様
 - [docs/sakura-notes.md](docs/sakura-notes.md) — サクラエディタのヘルプから確認した内容
+
+## ライセンス
+
+MIT License — [LICENSE](LICENSE)
+
+## English summary
+
+`rgs` runs [ripgrep](https://github.com/BurntSushi/ripgrep) and opens the results in
+[Sakura Editor](https://sakura-editor.github.io/) formatted as a Grep result list,
+so `F12` (tag jump) takes you straight to the match.
+
+It adds a search dialog modelled on Sakura's own Grep dialog, converts ripgrep's
+byte-based column numbers to the character-based columns Sakura expects (so lines
+containing Japanese text jump to the right position), and reproduces Sakura's
+character-class word boundaries — `test` matches inside `test用`, which ripgrep's
+`-w` does not.
+
+Windows only. Python and PowerShell implementations are provided; both follow the
+same specification and produce the same output. Documentation is in Japanese.

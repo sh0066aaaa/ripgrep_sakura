@@ -10,8 +10,9 @@
 ' 使う実装: "python" または "powershell"
 Const IMPL = "python"
 
-' $M が使えなかったときのリポジトリの場所
-Const ROOT_FALLBACK = "C:\work\ripgrep_sakura"
+' このマクロの置き場所からリポジトリのルートを自動で求めるので、通常は変更不要。
+' 求められなかったときだけ下の値を使う（必要なら書き換える）。
+Const ROOT_FALLBACK = "C:\tools\ripgrep_sakura"
 
 Dim root, key, f, folder, cmd, sh
 
