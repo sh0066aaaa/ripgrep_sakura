@@ -37,7 +37,7 @@ PowerShell 版は Windows 標準の PowerShell 5.1 で動くので、Python が�
 ## インストール
 
 ```
-git clone https://github.com/<ユーザー名>/ripgrep_sakura.git
+git clone https://github.com/sh0066aaaa/ripgrep_sakura.git
 ```
 
 ripgrep が入っていなければ:
