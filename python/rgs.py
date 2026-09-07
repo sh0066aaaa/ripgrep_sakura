@@ -867,12 +867,17 @@ def build_output(shown_args: list[str], root: str, rgrc: str | None,
     return header, body, footer
 
 
-def write_result_file(all_lines: list[str]) -> str:
-    """BOM 付き UTF-8 で書く。サクラエディタの文字コード判定を確実にするため。"""
+def write_result_file(all_lines: list[str], word: str) -> str:
+    """結果を rg_<検索ワード>.txt として書く。
+
+    BOM 付き UTF-8 にするのはサクラエディタの文字コード判定を確実にするため。
+    検索ワードはそのままではファイル名に使えないことがあるので整える。
+    """
     out_dir = Path(os.environ.get("TEMP", ".")) / "rgs"
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_") + "%03d" % (datetime.now().microsecond // 1000)
-    out = out_dir / ("rg_%s.grepout.txt" % stamp)
+    name = "".join("_" if c in '<>:"/|?*' + chr(92) else c for c in word)
+    name = name.strip().strip(".")[:60] or "grep"
+    out = out_dir / ("rg_%s.txt" % name)
     with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
         f.write("\n".join(all_lines) + "\n")
     return str(out)
@@ -902,6 +907,7 @@ def main(argv: list[str]) -> int:
     rg_args = opt.rg_args
     enc_list: list = [None]
     fmt = "normal"
+    search_word = ""
     if opt.dialog:
         cfg = load_config()
         if opt.init_word:
@@ -920,8 +926,14 @@ def main(argv: list[str]) -> int:
         rg_args = config_to_rg_args(chosen, rg)
         enc_list = ENCODING_MAP.get(chosen.get("Encoding", ""), [None])
         fmt = chosen.get("Format", "normal")
+        search_word = chosen.get("Word", "")
 
     rgrc = apply_default_rgrc()
+
+    # ファイル名に使うので、単語単位の変換で正規表現になる前に控える
+    if not search_word:
+        idx = first_positional_index(rg_args)
+        search_word = rg_args[idx] if idx >= 0 else ""
 
     if opt.word_jp:
         rg_args = apply_word_jp(rg_args, rg)
@@ -961,7 +973,7 @@ def main(argv: list[str]) -> int:
         write_utf8_stdout(header + body + footer)
         return 0
 
-    out_file = write_result_file(header + body + footer)
+    out_file = write_result_file(header + body + footer, search_word)
     # -R = ビューモード / -Y = 先頭ヒット行にカーソル
     subprocess.Popen([sakura, "-R", "-Y=%d" % (len(header) + 1), "--", out_file])
     print("該当 %d 件 -> %s" % (len(hits), out_file))
