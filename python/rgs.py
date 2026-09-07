@@ -867,6 +867,30 @@ def build_output(shown_args: list[str], root: str, rgrc: str | None,
     return header, body, footer
 
 
+def search_macro_args(word: str, case_sensitive: bool) -> list[str]:
+    """結果ファイルを開いた直後に検索を実行させる起動時マクロの引数。
+
+    サクラエディタは検索を 1 回実行すると該当箇所に検索マークを付ける
+    （色はタイプ別設定『カラー』の「検索文字列」）。それを利用して検索語を
+    ハイライトする。
+
+    検索語は String.fromCharCode() で組み立てるので、引用符・空白・円記号などを
+    含んでいてもマクロ文字列としてもコマンドラインとしても壊れない。
+    """
+    if not word:
+        return []
+    units = word.encode("utf-16-le")          # サロゲートペアも正しく分解される
+    codes = ",".join(str(int.from_bytes(units[i:i + 2], "little"))
+                     for i in range(0, len(units), 2))
+    # bit1=英大文字と小文字を区別する / bit12=検索キーを履歴に登録しない
+    # bit13=検索オプションを元に戻す
+    option = 4096 + 8192 + (2 if case_sensitive else 0)
+    # SearchNext で見つかった箇所は選択状態になる。その状態で SearchClearMark を
+    # 呼ぶと、選択中の文字列に検索マーク（ハイライト）が付く。
+    macro = "SearchNext(String.fromCharCode(%s),%d);SearchClearMark();" % (codes, option)
+    return ["-M=" + macro, "-MTYPE=js"]
+
+
 def write_result_file(all_lines: list[str], word: str) -> str:
     """結果を rg_<検索ワード>.txt として書く。
 
@@ -908,6 +932,8 @@ def main(argv: list[str]) -> int:
     enc_list: list = [None]
     fmt = "normal"
     search_word = ""
+    highlight_word = ""
+    highlight_case = False
     if opt.dialog:
         cfg = load_config()
         if opt.init_word:
@@ -927,6 +953,10 @@ def main(argv: list[str]) -> int:
         enc_list = ENCODING_MAP.get(chosen.get("Encoding", ""), [None])
         fmt = chosen.get("Format", "normal")
         search_word = chosen.get("Word", "")
+        # 正規表現検索のときはハイライトしない（サクラエディタとは正規表現の方言が違う）
+        if not chosen.get("Regex"):
+            highlight_word = search_word
+            highlight_case = bool(chosen.get("Case"))
 
     rgrc = apply_default_rgrc()
 
@@ -934,6 +964,13 @@ def main(argv: list[str]) -> int:
     if not search_word:
         idx = first_positional_index(rg_args)
         search_word = rg_args[idx] if idx >= 0 else ""
+
+    if not highlight_word and search_word:
+        # コマンドラインでは -F（固定文字列）か -WordJp のときだけ元の語でハイライトする
+        literal = opt.word_jp or any(a in ("-F", "--fixed-strings") for a in rg_args)
+        if literal:
+            highlight_word = search_word
+            highlight_case = any(a in ("-s", "--case-sensitive") for a in rg_args)
 
     if opt.word_jp:
         rg_args = apply_word_jp(rg_args, rg)
@@ -975,7 +1012,9 @@ def main(argv: list[str]) -> int:
 
     out_file = write_result_file(header + body + footer, search_word)
     # -R = ビューモード / -Y = 先頭ヒット行にカーソル
-    subprocess.Popen([sakura, "-R", "-Y=%d" % (len(header) + 1), "--", out_file])
+    subprocess.Popen([sakura, "-R", "-Y=%d" % (len(header) + 1)]
+                     + search_macro_args(highlight_word, highlight_case)
+                     + ["--", out_file])
     print("該当 %d 件 -> %s" % (len(hits), out_file))
     return 0
 
