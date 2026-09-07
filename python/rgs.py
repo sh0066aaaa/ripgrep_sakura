@@ -42,7 +42,7 @@ VIMGREP_RE = re.compile(r"^(.*):(\d+):(\d+):(.*)$")
 # -v (否該当行) のときは桁が出ない: path:line:text
 VIMGREP_NOCOL_RE = re.compile(r"^(.*):(\d+):(.*)$")
 
-USAGE = "usage: rgs [-Dialog] [-Direct] [-Stdout] [-DryRun] [-WordJp] <rg の引数...>"
+USAGE = "usage: rgs [-Dialog] [-Direct] [-Stdout] [-DryRun] [-WordJp] [-Pos active|cursor|primary] <rg の引数...>"
 
 
 # --- 出力 -----------------------------------------------------------------
@@ -175,6 +175,7 @@ class Options:
         self.stdout = False
         self.dry_run = False
         self.word_jp = False
+        self.pos = ""
         self.init_word = ""
         self.init_folder = ""
         self.rg_args: list[str] = []
@@ -188,7 +189,7 @@ def parse_args(argv: list[str]) -> Options:
         "-dialog": "dialog", "-direct": "direct", "-stdout": "stdout",
         "-dryrun": "dry_run", "-wordjp": "word_jp",
     }
-    takes_value = {"-word": "init_word", "-folder": "init_folder"}
+    takes_value = {"-word": "init_word", "-folder": "init_folder", "-pos": "pos"}
     while i < len(argv):
         low = argv[i].lower()
         if low in flags:
@@ -277,6 +278,7 @@ DEFAULT_CONFIG = {
     "Format": "normal",  # 結果出力形式 normal=ノーマル / perfile=ファイル毎 / only=結果のみ
     "FirstOnly": False,  # ファイル毎最初のみ検索
     "Encoding": "",      # 文字コードセット（空なら ENCODINGS の先頭）
+    "WindowPos": "active",  # ダイアログを出すモニター active/cursor/primary
     "History": {},       # 各入力欄の履歴
 }
 
@@ -337,6 +339,88 @@ def save_config(cfg: dict) -> None:
 
 # --- 検索ダイアログ ---------------------------------------------------------
 
+# --- ダイアログを出すモニターの決定 -----------------------------------------
+# Tk の "tk::PlaceWindow . center" はプライマリモニターしか見ないため、
+# サクラエディタがサブモニターにあってもダイアログはメインに出てしまう。
+# Win32 API でモニターを選び、その作業領域の中央に置く。
+
+WINDOW_POS_MODES = ("active", "cursor", "primary")
+
+
+def foreground_window():
+    """ダイアログを作る前のフォアグラウンドウィンドウ。
+
+    マクロから起動した場合はサクラエディタのウィンドウになる。
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        return user32.GetForegroundWindow()
+    except Exception:
+        return None
+
+
+def work_area(mode: str, hwnd) -> tuple | None:
+    """指定したモニターの作業領域 (x, y, 幅, 高さ)。取れなければ None。"""
+    if mode == "primary":
+        return None
+    MONITOR_DEFAULTTONEAREST = 2
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class RECT(ctypes.Structure):
+            _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                        ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                        ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
+
+        user32 = ctypes.windll.user32
+        user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        user32.MonitorFromWindow.restype = ctypes.c_void_p
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, ctypes.c_ulong]
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MONITORINFO)]
+        user32.GetMonitorInfoW.restype = ctypes.c_int
+
+        hmon = None
+        if mode == "active" and hwnd:
+            hmon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        if hmon is None:
+            pt = wintypes.POINT()
+            if user32.GetCursorPos(ctypes.byref(pt)):
+                hmon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
+        if not hmon:
+            return None
+
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            return None
+        r = mi.rcWork
+        return (r.left, r.top, r.right - r.left, r.bottom - r.top)
+    except Exception:
+        return None
+
+
+def place_window(root, area) -> None:
+    """作業領域の中央にウィンドウを置く。area が None なら Tk 任せ。"""
+    root.update_idletasks()
+    if not area:
+        root.eval("tk::PlaceWindow . center")
+        return
+    w = root.winfo_reqwidth()
+    h = root.winfo_reqheight()
+    x = area[0] + max(0, (area[2] - w) // 2)
+    y = area[1] + max(0, (area[3] - h) // 2)
+    root.geometry("+%d+%d" % (x, y))
+    # ここで反映させないと、後続の focus_force() で既定位置のままマップされる
+    root.update_idletasks()
+
+
 def engine_label(rg: str) -> str:
     """サクラエディタの「bregonig.dll ...」表示にあたる、検索エンジンの情報。"""
     def first_line(args):
@@ -368,6 +452,9 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
 
     # 入力欄の幅（文字数）。検索場所だけ右の [...] ボタンの分を引いて端をそろえる
     WIDE = 88
+
+    # Tk のウィンドウを作る前に控える（マクロ起動ならサクラエディタのウィンドウ）
+    anchor_hwnd = foreground_window()
 
     hist = cfg.get("History") or {}
     home_folder = cfg["Folder"]
@@ -511,6 +598,7 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
             "Sub": v_sub.get(), "Hidden": v_hidden.get(), "FirstOnly": v_first.get(),
             "Output": v_output.get(), "Format": v_format.get(), "Encoding": v_enc.get(),
             "History": cfg.get("History") or {},
+            "WindowPos": cfg.get("WindowPos", "active"),
         })
         for key in ("Word", "Folder", "Files", "ExcludeFiles", "ExcludeDirs"):
             push_history(result, key, result[key])
@@ -543,7 +631,7 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
     for key, var in (("w", v_whole), ("c", v_case), ("e", v_regex), ("s", v_sub)):
         root.bind("<Alt-%s>" % key, lambda e, v=var: v.set(not v.get()))
 
-    root.eval("tk::PlaceWindow . center")
+    place_window(root, work_area(cfg.get("WindowPos", "active"), anchor_hwnd))
     root.attributes("-topmost", True)
     c_word.focus_force()
     c_word.select_range(0, "end")
@@ -791,6 +879,8 @@ def main(argv: list[str]) -> int:
             cfg["Folder"] = opt.init_folder
         if not cfg["Folder"]:
             cfg["Folder"] = os.getcwd()
+        if opt.pos in WINDOW_POS_MODES:
+            cfg["WindowPos"] = opt.pos
         chosen = show_dialog(cfg, rg)
         if not chosen:
             return 0

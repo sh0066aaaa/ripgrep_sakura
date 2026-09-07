@@ -76,12 +76,13 @@ rgs TODO                      # カレント配下を検索
 rgs -i "foo bar" src          # rg のオプションはそのまま渡せる
 rgs -g "*.cs" -w Hoge
 rgs -Dialog                   # 検索ダイアログを開く
+rgs -Dialog -Pos cursor       # ダイアログをマウスカーソルのあるモニターに出す
 rgs -WordJp test              # サクラエディタと同じ単語単位で検索
 rgs -Direct MainWindow        # 先頭ヒットのファイルを直接その行で開く
 rgs -DryRun -i -w foo         # rg に渡す引数を表示するだけ（確認用）
 ```
 
-制御スイッチ（`-Dialog` `-Direct` `-Stdout` `-DryRun` `-WordJp`）は**先頭**に置く。
+制御スイッチ（`-Dialog` `-Direct` `-Stdout` `-DryRun` `-WordJp` `-Pos`）は**先頭**に置く。
 それ以外の引数はすべて rg にそのまま渡る。
 
 | キー | 動作 |
@@ -114,6 +115,27 @@ rgs -DryRun -i -w foo         # rg に渡す引数を表示するだけ（確認
 チェックボックスとボタンには `Alt` のアクセラレータを割り当ててある。
 
 入力内容と履歴は `%APPDATA%\rgs\dialog.json` に保存され、次回復元される。
+
+### ダイアログを出すモニター
+
+既定は **起動元ウィンドウ（マクロから起動ならサクラエディタ）があるモニターの中央**。
+サクラエディタをサブモニターに置いていれば、ダイアログもそちらに出る。
+
+| 値 | 動作 |
+|---|---|
+| `active`（既定） | 起動元ウィンドウのあるモニター |
+| `cursor` | マウスカーソルのあるモニター |
+| `primary` | メインモニター（Tk 任せ。従来の動作） |
+
+コマンドラインなら `-Pos`、恒久的に変えるなら `dialog.json` の `WindowPos` で指定する。
+
+```
+rgs -Dialog -Pos cursor
+```
+
+Tk の `tk::PlaceWindow` はプライマリモニターしか見ないため、
+Win32 API（`MonitorFromWindow` / `MonitorFromPoint` / `GetMonitorInfo`）で
+モニターを選び、その作業領域の中央に置いている。
 
 ### 結果出力形式とタグジャンプ
 

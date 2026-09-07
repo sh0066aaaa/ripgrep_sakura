@@ -104,6 +104,15 @@ open(sj, "wb").write("日本語".encode("cp932"))
 eq("utf8 判定 (UTF-8)", rgs.is_utf8_like(u8), True)
 eq("utf8 判定 (SJIS)", rgs.is_utf8_like(sj), False)
 
+# --- ダイアログを出すモニターの決定 ---
+eq("pos モード一覧", rgs.WINDOW_POS_MODES, ("active", "cursor", "primary"))
+eq("primary は Tk 任せ", rgs.work_area("primary", None), None)
+_area = rgs.work_area("cursor", None)
+eq("cursor は矩形を返す", (isinstance(_area, tuple), len(_area or ()) == 4), (True, True))
+eq("cursor の矩形は正の大きさ", (_area[2] > 0, _area[3] > 0), (True, True))
+o = rgs.parse_args(["-Dialog", "-Pos", "cursor", "foo"])
+eq("parse -Pos", (o.dialog, o.pos, o.rg_args), (True, "cursor", ["foo"]))
+
 print()
 print("ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)
