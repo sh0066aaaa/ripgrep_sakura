@@ -113,6 +113,15 @@ eq("cursor の矩形は正の大きさ", (_area[2] > 0, _area[3] > 0), (True, Tr
 o = rgs.parse_args(["-Dialog", "-Pos", "cursor", "foo"])
 eq("parse -Pos", (o.dialog, o.pos, o.rg_args), (True, "cursor", ["foo"]))
 
+# --- 検索場所の初期値 ---
+eq("初期値=前回のフォルダー（既定）",
+   rgs.initial_folder({"Folder": r"D:\last", "CurrentFolderDefault": False}, r"D:\now"), r"D:\last")
+eq("初期値=現フォルダー（チェック ON）",
+   rgs.initial_folder({"Folder": r"D:\last", "CurrentFolderDefault": True}, r"D:\now"), r"D:\now")
+eq("前回が無ければ現フォルダー",
+   rgs.initial_folder({"Folder": "", "CurrentFolderDefault": False}, r"D:\now"), r"D:\now")
+eq("既定値は前回のフォルダー", rgs.DEFAULT_CONFIG["CurrentFolderDefault"], False)
+
 print()
 print("ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)

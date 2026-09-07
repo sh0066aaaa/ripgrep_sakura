@@ -279,6 +279,8 @@ DEFAULT_CONFIG = {
     "FirstOnly": False,  # ファイル毎最初のみ検索
     "Encoding": "",      # 文字コードセット（空なら ENCODINGS の先頭）
     "WindowPos": "active",  # ダイアログを出すモニター active/cursor/primary
+    "CurrentFolderDefault": False,  # 検索場所の初期値を「編集中ファイルのフォルダー」にする
+                                    # False なら前回検索したフォルダーを引き継ぐ
     "History": {},       # 各入力欄の履歴
 }
 
@@ -452,7 +454,18 @@ def engine_label(rg: str) -> str:
     return ver
 
 
-def show_dialog(cfg: dict, rg: str) -> dict | None:
+def initial_folder(cfg: dict, current_folder: str) -> str:
+    """検索場所の初期値。
+
+    既定は前回検索したフォルダー。「カレントフォルダーが初期値」が ON のとき、
+    または前回の記録が無いときは呼び出し元のフォルダー（マクロなら編集中ファイル）。
+    """
+    if cfg.get("CurrentFolderDefault") or not cfg.get("Folder"):
+        return current_folder
+    return cfg["Folder"]
+
+
+def show_dialog(cfg: dict, rg: str, current_folder: str = "") -> dict | None:
     """サクラエディタの Grep ダイアログに似せた検索ダイアログ。"""
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
@@ -470,7 +483,8 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
     anchor_hwnd = foreground_window()
 
     hist = cfg.get("History") or {}
-    home_folder = cfg["Folder"]
+    # 「現フォルダー」ボタンの飛び先。前回のフォルダーではなく呼び出し元のフォルダー
+    home_folder = current_folder or cfg["Folder"]
     result: dict = {}
 
     root = tk.Tk()
@@ -487,6 +501,7 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
     v_regex = tk.BooleanVar(value=bool(cfg["Regex"]))
     v_sub = tk.BooleanVar(value=bool(cfg["Sub"]))
     v_hidden = tk.BooleanVar(value=bool(cfg["Hidden"]))
+    v_curdef = tk.BooleanVar(value=bool(cfg.get("CurrentFolderDefault")))
     v_first = tk.BooleanVar(value=bool(cfg.get("FirstOnly")))
     v_output = tk.StringVar(value=cfg.get("Output", "line"))
     v_format = tk.StringVar(value=cfg.get("Format", "normal"))
@@ -556,19 +571,20 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
                ).grid(row=0, column=1, padx=(12, 4))
     ttk.Button(sub_row, text="現フォルダー(G)", width=15, underline=7,
                command=lambda: v_folder.set(home_folder)).grid(row=0, column=2)
-    check(left, "隠しファイルも検索する (rg 固有)", v_hidden, 6)
+    check(left, "カレントフォルダーが初期値(D)", v_curdef, 6, underline=14)
+    check(left, "隠しファイルも検索する (rg 固有)", v_hidden, 7)
 
     # --- 対象 / 除外 --------------------------------------------------------
-    label(left, "対象ファイル(I):", 7)
-    combo(left, v_files, "Files", WIDE, 7)
-    label(left, "除外ファイル(J):", 8)
-    combo(left, v_exfiles, "ExcludeFiles", WIDE, 8)
-    label(left, "除外フォルダー(K):", 9)
-    combo(left, v_exdirs, "ExcludeDirs", WIDE, 9)
+    label(left, "対象ファイル(I):", 8)
+    combo(left, v_files, "Files", WIDE, 8)
+    label(left, "除外ファイル(J):", 9)
+    combo(left, v_exfiles, "ExcludeFiles", WIDE, 9)
+    label(left, "除外フォルダー(K):", 10)
+    combo(left, v_exdirs, "ExcludeDirs", WIDE, 10)
 
     # --- 下段のグループ -----------------------------------------------------
     groups = ttk.Frame(left)
-    groups.grid(row=10, column=0, columnspan=3, sticky="we", pady=(10, 0))
+    groups.grid(row=11, column=0, columnspan=3, sticky="we", pady=(10, 0))
 
     g_out = ttk.LabelFrame(groups, text="結果出力", padding=6)
     g_out.grid(row=0, column=0, sticky="nw")
@@ -612,6 +628,7 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
             "Output": v_output.get(), "Format": v_format.get(), "Encoding": v_enc.get(),
             "History": cfg.get("History") or {},
             "WindowPos": cfg.get("WindowPos", "active"),
+            "CurrentFolderDefault": v_curdef.get(),
         })
         for key in ("Word", "Folder", "Files", "ExcludeFiles", "ExcludeDirs"):
             push_history(result, key, result[key])
@@ -641,7 +658,8 @@ def show_dialog(cfg: dict, rg: str) -> dict | None:
     root.bind("<Alt-g>", lambda e: v_folder.set(home_folder))
     root.bind("<Alt-n>", lambda e: c_word.focus_set())
     root.bind("<Alt-l>", lambda e: c_folder.focus_set())
-    for key, var in (("w", v_whole), ("c", v_case), ("e", v_regex), ("s", v_sub)):
+    for key, var in (("w", v_whole), ("c", v_case), ("e", v_regex), ("s", v_sub),
+                     ("d", v_curdef)):
         root.bind("<Alt-%s>" % key, lambda e, v=var: v.set(not v.get()))
 
     place_window(root, work_area(cfg.get("WindowPos", "active"), anchor_hwnd))
@@ -888,13 +906,12 @@ def main(argv: list[str]) -> int:
         cfg = load_config()
         if opt.init_word:
             cfg["Word"] = opt.init_word
-        if opt.init_folder:
-            cfg["Folder"] = opt.init_folder
-        if not cfg["Folder"]:
-            cfg["Folder"] = os.getcwd()
+        # 呼び出し元が示すフォルダー（マクロなら編集中ファイルのフォルダー）
+        current_folder = opt.init_folder or os.getcwd()
+        cfg["Folder"] = initial_folder(cfg, current_folder)
         if opt.pos in WINDOW_POS_MODES:
             cfg["WindowPos"] = opt.pos
-        chosen = show_dialog(cfg, rg)
+        chosen = show_dialog(cfg, rg, current_folder)
         if not chosen:
             return 0
         save_config(chosen)
