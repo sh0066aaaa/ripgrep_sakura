@@ -27,7 +27,9 @@ folder = ""
 If InStrRev(f, "\") > 0 Then folder = Left(f, InStrRev(f, "\") - 1)
 
 If IMPL = "python" Then
-    ' pythonw なのでコンソールが一瞬も出ない
+    ' pythonw を使うこと。コンソールが一瞬も出ないので、
+    ' 前面ウィンドウがサクラエディタのままになり、
+    ' 検索ダイアログがサクラエディタと同じモニターに出る。
     cmd = "pythonw """ & root & "\python\rgs.py"""
 Else
     cmd = "powershell -NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File """ & _

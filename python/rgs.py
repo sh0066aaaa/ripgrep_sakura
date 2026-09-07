@@ -351,12 +351,25 @@ def foreground_window():
     """ダイアログを作る前のフォアグラウンドウィンドウ。
 
     マクロから起動した場合はサクラエディタのウィンドウになる。
+    マクロが pythonw で起動するのはこのため。python.exe だとコンソールが
+    前面に出て、ダイアログの表示モニターがそちらに引っ張られる。
+    自分自身のウィンドウだった場合は採用しない（カーソル基準に落ちる）。
     """
     try:
         import ctypes
+        from ctypes import wintypes
         user32 = ctypes.windll.user32
         user32.GetForegroundWindow.restype = ctypes.c_void_p
-        return user32.GetForegroundWindow()
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                                    ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == os.getpid():
+            return None
+        return hwnd
     except Exception:
         return None
 

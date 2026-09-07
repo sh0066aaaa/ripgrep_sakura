@@ -133,6 +133,10 @@ rgs -DryRun -i -w foo         # rg に渡す引数を表示するだけ（確認
 rgs -Dialog -Pos cursor
 ```
 
+マクロは `pythonw` で起動するのでコンソールが一切出ず、前面ウィンドウが
+サクラエディタのままになる。そのためターミナルの位置には影響されない。
+ターミナルから `rgs -Dialog` と打った場合は、そのターミナルのモニターに出る。
+
 Tk の `tk::PlaceWindow` はプライマリモニターしか見ないため、
 Win32 API（`MonitorFromWindow` / `MonitorFromPoint` / `GetMonitorInfo`）で
 モニターを選び、その作業領域の中央に置いている。
