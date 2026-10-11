@@ -122,6 +122,27 @@ eq("前回が無ければ現フォルダー",
    rgs.initial_folder({"Folder": "", "CurrentFolderDefault": False}, r"D:\now"), r"D:\now")
 eq("既定値は前回のフォルダー", rgs.DEFAULT_CONFIG["CurrentFolderDefault"], False)
 
+# --- 検索語ハイライト（起動時マクロ）のオプション ---
+eq("hl plain", rgs.search_macro_args("ab", False),
+   ["-M=SearchNext(String.fromCharCode(97,98),2048);", "-MTYPE=js"])
+eq("hl case+whole+flags", rgs.search_macro_args("a", True, True, 0x08 | 0x10)[0],
+   "-M=SearchNext(String.fromCharCode(97),%d);" % (0x800 | 0x18 | 0x03))
+eq("hl empty", rgs.search_macro_args("", True, True), [])
+eq("dlg flags ini", rgs.search_dialog_flags(
+   "bAutoCloseDlgFind=0\nbSearchAll=1\nbSearchNOTIFYNOTFOUND=1\n"), 0x08 | 0x20)
+eq("dlg flags default", rgs.search_dialog_flags(""), 0x08 | 0x10)
+import tempfile
+with tempfile.NamedTemporaryFile("w", suffix=".rgrc", delete=False, encoding="utf-8") as f:
+    f.write("# c\n--smart-case\n")
+smart_rc = f.name
+eq("case default",      rgs.rg_case_sensitive(["-F", "todo"], None, "todo"), True)
+eq("case smart lower",  rgs.rg_case_sensitive(["-F", "todo"], smart_rc, "todo"), False)
+eq("case smart upper",  rgs.rg_case_sensitive(["-F", "Todo"], smart_rc, "Todo"), True)
+eq("case cmd wins",     rgs.rg_case_sensitive(["-s", "-F", "todo"], smart_rc, "todo"), True)
+eq("case -i",           rgs.rg_case_sensitive(["-i", "-F", "Todo"], None, "Todo"), False)
+eq("case after --",     rgs.rg_case_sensitive(["-F", "--", "-i"], None, "-i"), True)
+os.remove(smart_rc)
+
 print()
 print("ALL PASS" if ok else "FAILED")
 sys.exit(0 if ok else 1)

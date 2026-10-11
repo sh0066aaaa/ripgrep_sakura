@@ -867,28 +867,111 @@ def build_output(shown_args: list[str], root: str, rgrc: str | None,
     return header, body, footer
 
 
-def search_macro_args(word: str, case_sensitive: bool) -> list[str]:
+# 検索ダイアログのチェック状態のうち、SearchNext マクロが上書きするもの
+# （sakura.ini のキー, SearchNext のビット, 既定値）
+SEARCH_DLG_FLAGS = (
+    ("bSearchNOTIFYNOTFOUND", 0x08, True),   # 見つからないときにメッセージを表示
+    ("bAutoCloseDlgFind", 0x10, True),       # 検索ダイアログを自動的に閉じる
+    ("bSearchAll", 0x20, False),             # 先頭（末尾）から再検索する
+)
+
+
+def sakura_ini_path(sakura: str | None) -> Path | None:
+    """サクラエディタの設定ファイル sakura.ini の場所。
+
+    sakura.exe.ini でマルチユーザー設定（MultiUser=1）なら
+    UserRootFolder / UserSubFolder の下、そうでなければ sakura.exe と同じフォルダー。
+    """
+    if not sakura:
+        return None
+    exe_dir = Path(sakura).resolve().parent
+    try:
+        text = (exe_dir / "sakura.exe.ini").read_text(encoding="cp932", errors="ignore")
+    except OSError:
+        text = ""
+    conf = dict(re.findall(r"(?m)^\s*(\w+)\s*=\s*(.*?)\s*$", text))
+    if conf.get("MultiUser") == "1":
+        home = Path(os.environ.get("USERPROFILE", ""))
+        roots = {"0": Path(os.environ.get("APPDATA", "")), "1": home,
+                 "2": home / "Documents", "3": home / "Desktop"}
+        root = roots.get(conf.get("UserRootFolder", "0"), roots["0"])
+        return root / (conf.get("UserSubFolder") or "sakura") / "sakura.ini"
+    return exe_dir / "sakura.ini"
+
+
+def search_dialog_flags(ini_text: str) -> int:
+    """sakura.ini から、SearchNext に引き継ぐ検索ダイアログのチェック状態を求める。"""
+    flags = 0
+    for key, bit, default in SEARCH_DLG_FLAGS:
+        m = re.search(r"(?m)^%s=(\d+)" % key, ini_text)
+        if (m.group(1) != "0") if m else default:
+            flags |= bit
+    return flags
+
+
+def read_search_dialog_flags(sakura: str | None) -> int:
+    path = sakura_ini_path(sakura)
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="ignore") if path else ""
+    except OSError:
+        text = ""
+    return search_dialog_flags(text)
+
+
+def search_macro_args(word: str, case_sensitive: bool, whole_word: bool = False,
+                      dialog_flags: int = 0) -> list[str]:
     """結果ファイルを開いた直後に検索を実行させる起動時マクロの引数。
 
     サクラエディタは検索を 1 回実行すると該当箇所に検索マークを付ける
     （色はタイプ別設定『カラー』の「検索文字列」）。それを利用して検索語を
-    ハイライトする。
+    ハイライトする。検索オプション（単語単位 / 大小区別）は rg に合わせる。
 
     検索語は String.fromCharCode() で組み立てるので、引用符・空白・円記号などを
     含んでいてもマクロ文字列としてもコマンドラインとしても壊れない。
+
+    dialog_flags は検索ダイアログの「見つからないときにメッセージを表示」などの
+    状態。SearchNext はこれらを設定値として書き戻すので、現在の値を渡して保つ。
     """
     if not word:
         return []
     units = word.encode("utf-16-le")          # サロゲートペアも正しく分解される
     codes = ",".join(str(int.from_bytes(units[i:i + 2], "little"))
                      for i in range(0, len(units), 2))
-    # bit1=英大文字と小文字を区別する / bit12=検索キーを履歴に登録しない
-    # bit13=検索オプションを元に戻す
-    option = 4096 + 8192 + (2 if case_sensitive else 0)
-    # SearchNext で見つかった箇所は選択状態になる。その状態で SearchClearMark を
-    # 呼ぶと、選択中の文字列に検索マーク（ハイライト）が付く。
-    macro = "SearchNext(String.fromCharCode(%s),%d);SearchClearMark();" % (codes, option)
+    # 0x01=単語単位で探す / 0x02=英大文字と小文字を区別する
+    # 0x800=検索キーを履歴に登録しない（ヘルプでは bit12 とあるが実装は 0x800）
+    # 「検索オプションを元に戻す」(0x1000) は付けない。付けると検索マークまで
+    # 元に戻ってハイライトが消える。0x800 なら共有の検索履歴・検索オプションは変わらない
+    option = 0x800 | (dialog_flags & 0x38)
+    if whole_word:
+        option |= 0x01
+    if case_sensitive:
+        option |= 0x02
+    macro = "SearchNext(String.fromCharCode(%s),%d);" % (codes, option)
     return ["-M=" + macro, "-MTYPE=js"]
+
+
+def rg_case_sensitive(args: list[str], rgrc: str | None, pattern: str) -> bool:
+    """rg が大文字小文字を区別して検索するか。rgrc → コマンドラインの順に後勝ち。"""
+    opts: list[str] = []
+    if rgrc:
+        try:
+            with open(rgrc, encoding="utf-8", errors="ignore") as f:
+                opts = [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+        except OSError:
+            pass
+    mode = "sensitive"                        # rg の既定は区別する
+    for a in opts + args:
+        if a == "--":
+            break
+        if a in ("-s", "--case-sensitive"):
+            mode = "sensitive"
+        elif a in ("-i", "--ignore-case"):
+            mode = "ignore"
+        elif a in ("-S", "--smart-case"):
+            mode = "smart"
+    if mode == "smart":
+        return any(c.isupper() for c in pattern)
+    return mode == "sensitive"
 
 
 def write_result_file(all_lines: list[str], word: str) -> str:
@@ -934,6 +1017,7 @@ def main(argv: list[str]) -> int:
     search_word = ""
     highlight_word = ""
     highlight_case = False
+    highlight_whole = False
     if opt.dialog:
         cfg = load_config()
         if opt.init_word:
@@ -957,6 +1041,7 @@ def main(argv: list[str]) -> int:
         if not chosen.get("Regex"):
             highlight_word = search_word
             highlight_case = bool(chosen.get("Case"))
+            highlight_whole = bool(chosen.get("Whole"))
 
     rgrc = apply_default_rgrc()
 
@@ -970,7 +1055,8 @@ def main(argv: list[str]) -> int:
         literal = opt.word_jp or any(a in ("-F", "--fixed-strings") for a in rg_args)
         if literal:
             highlight_word = search_word
-            highlight_case = any(a in ("-s", "--case-sensitive") for a in rg_args)
+            highlight_case = rg_case_sensitive(rg_args, rgrc, search_word)
+            highlight_whole = opt.word_jp or any(a in ("-w", "--word-regexp") for a in rg_args)
 
     if opt.word_jp:
         rg_args = apply_word_jp(rg_args, rg)
@@ -1013,7 +1099,8 @@ def main(argv: list[str]) -> int:
     out_file = write_result_file(header + body + footer, search_word)
     # -R = ビューモード / -Y = 先頭ヒット行にカーソル
     subprocess.Popen([sakura, "-R", "-Y=%d" % (len(header) + 1)]
-                     + search_macro_args(highlight_word, highlight_case)
+                     + search_macro_args(highlight_word, highlight_case, highlight_whole,
+                                         read_search_dialog_flags(sakura))
                      + ["--", out_file])
     print("該当 %d 件 -> %s" % (len(hits), out_file))
     return 0
